@@ -388,22 +388,33 @@ async def analyzechart_cmd(
         # Kirim ke Gemini Vision (gratis)
         result = await analyze_chart_with_gemini(image_bytes, clean_mime, catatan)
 
-        # Discord embed limit 4096 chars
-        if len(result) > 3800:
-            result = result[:3800].rsplit("\n", 1)[0]
-
+        # Kirim header + gambar sebagai embed
         embed = discord.Embed(
             title="🤖 Analisa Chart AI",
-            description=result,
             color=0x58a6ff,
             timestamp=datetime.utcnow(),
         )
-        embed.set_thumbnail(url=chart.url)
+        embed.set_image(url=chart.url)
         embed.set_footer(
             text=f"Powered by Gemini · Upload by {interaction.user.display_name}"
         )
 
+        # Kirim hasil analisa sebagai plain text (limit 2000 char per message)
+        # Split per baris supaya tidak kepotong di tengah kalimat
+        chunks = []
+        current = ""
+        for line in result.split("\n"):
+            if len(current) + len(line) + 1 > 1900:
+                chunks.append(current)
+                current = line
+            else:
+                current += ("\n" if current else "") + line
+        if current:
+            chunks.append(current)
+
         await interaction.followup.send(embed=embed)
+        for chunk in chunks:
+            await interaction.followup.send(chunk)
 
     except Exception as e:
         log.exception(e)
