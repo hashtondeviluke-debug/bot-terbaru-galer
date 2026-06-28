@@ -171,18 +171,64 @@ def build_chart(ticker: str, timeframe: str, extra_mas: list[dict]) -> io.BytesI
 
 
 # ─── Gemini Vision: Analisa Chart ────────────────────────────────────────────
-ANALYZE_PROMPT = """Kamu adalah analis teknikal profesional saham IDX. Analisa chart yang diupload dengan detail.
+ANALYZE_PROMPT = """Kamu analis teknikal IDX. Jawab dalam format ini PERSIS, setiap section 1 baris saja, tanpa penjelasan panjang:
 
-Berikan analisa dalam format berikut (bisa lebih dari 1 baris per section):
+📌 TICKER: [nama & timeframe]
+📈 TREND: [Uptrend/Downtrend/Sideways - alasan 5 kata]
+🔴 RESISTANCE: [level1, level2]
+🟢 SUPPORT: [level1, level2]
+⚡ SINYAL: [sinyal utama 1 kalimat]
+🎯 REKOMENDASI: [Buy/Sell/Wait | Entry: X | TP: X | SL: X]
+⚠️ Bukan saran investasi."""
 
-📌 **TICKER**: Nama saham + timeframe
-📈 **TREND**: Trend keseluruhan (Uptrend / Downtrend / Sideways) + alasan singkat
-🔴 **RESISTANCE**: Level resistance utama (minimal 2 level) + kekuatannya
-🟢 **SUPPORT**: Level support utama (minimal 2 level) + kekuatannya
-📊 **INDIKATOR**: Analisa Moving Average, Volume, Candlestick pattern yang terlihat
-⚡ **SINYAL**: Sinyal trading saat ini (Bullish/Bearish/Neutral)
-🎯 **REKOMENDASI**: Rekomendasi action + entry price, target profit, stop loss
-⚠️ Catatan: Ini bukan saran investasi, hanya analisa teknikal."""
+async def analyze_chart_with_gemini(image_bytes: bytes, mime_type: str, extra_note: str = "") -> str:
+    """Kirim gambar ke Gemini API dan return hasil analisa. Gratis 1500 req/hari."""
+    if not GEMINI_KEY:
+        return (
+            "❌ `GEMINI_API_KEY` belum diset di environment variable Railway.\n"
+            "Daftar gratis di: https://aistudio.google.com/app/apikey"
+        )
+
+    b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
+    prompt = ANALYZE_PROMPT + (f"\n\nCatatan dari user: {extra_note}" if extra_note else "")
+
+    payload = {
+        "contents": [
+            {
+                "parts": [
+                    {
+                        "inline_data": {
+                            "mime_type": mime_type,
+                            "data": b64,
+                        }
+                    },
+                    {"text": prompt},
+                ]
+            }
+        ],
+        "generationConfig": {
+            "maxOutputTokens": 1024,
+            "temperature": 0.1,
+        },
+    }
+
+    url = (
+        f"https://generativelanguage.googleapis.com/v1beta/models/"
+        f"gemini-2.5-flash:generateContent?key={GEMINI_KEY}"
+    )
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            url,
+            json=payload,
+            headers={"Content-Type": "application/json"},
+            timeout=aiohttp.ClientTimeout(total=60),
+        ) as resp:
+            if resp.status != 200:
+                err = await resp.text()
+                raise RuntimeError(f"Gemini API error {resp.status}: {err[:300]}")
+            data = await resp.json()
+            return data["candidates"][0]["content"]["parts"][0]["text"]
 
 
 # ─── Bot Setup ───────────────────────────────────────────────────────────────
@@ -294,51 +340,76 @@ async def chart_cmd(
 
 
 # ─── /analyzechart ───────────────────────────────────────────────────────────
-# ─── /analyzechart ───────────────────────────────────────────────────────────
 @bot.tree.command(
     name="analyzechart",
-    description="Upload screenshot chart TradingView → dianalisa AI Gemini"
+    description="Upload screenshot chart TradingView → dianalisa AI (support, resistance, sinyal)"
 )
 @app_commands.describe(
-    chart="Upload gambar chart TradingView (PNG/JPG)",
-    catatan="Catatan tambahan (opsional)"
+    chart="Upload screenshot chart TradingView kamu (PNG/JPG)",
+    catatan="Catatan tambahan opsional (contoh: fokus ke area breakout)",
 )
 async def analyzechart_cmd(
     interaction: discord.Interaction,
     chart: discord.Attachment,
     catatan: str = "",
 ):
-    await interaction.response.defer()
-
-    # Validasi file
-    if not chart.content_type or not chart.content_type.startswith("image/"):
-        await interaction.followup.send("❌ Harus upload gambar chart.", ephemeral=True)
+    # Validasi tipe file
+    allowed_mime = {"image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"}
+    mime = chart.content_type or ""
+    if not any(mime.startswith(m) for m in allowed_mime):
+        await interaction.response.send_message(
+            "❌ File harus berupa gambar (PNG, JPG, WEBP).", ephemeral=True)
         return
 
+    # Validasi ukuran (max 5 MB)
+    if chart.size > 5 * 1024 * 1024:
+        await interaction.response.send_message(
+            "❌ Ukuran gambar maksimal 5 MB.", ephemeral=True)
+        return
+
+    await interaction.response.defer()
+
     try:
-        # Download gambar
+        # Download gambar dari Discord CDN
         async with aiohttp.ClientSession() as session:
             async with session.get(chart.url) as resp:
                 image_bytes = await resp.read()
 
-        mime_type = chart.content_type or "image/png"
+        # Normalisasi mime type
+        if "jpeg" in mime or "jpg" in mime:
+            clean_mime = "image/jpeg"
+        elif "webp" in mime:
+            clean_mime = "image/webp"
+        elif "gif" in mime:
+            clean_mime = "image/gif"
+        else:
+            clean_mime = "image/png"
 
-        # Analisa dengan Gemini
-        result = await analyze_chart_with_gemini(image_bytes, mime_type, catatan)
+        # Kirim ke Gemini Vision (gratis)
+        result = await analyze_chart_with_gemini(image_bytes, clean_mime, catatan)
+
+        # Discord embed limit 4096 chars
+        if len(result) > 3800:
+            result = result[:3800].rsplit("\n", 1)[0]
 
         embed = discord.Embed(
-            title="🤖 Analisa Chart AI (Gemini)",
+            title="🤖 Analisa Chart AI",
             description=result,
             color=0x58a6ff,
-            timestamp=datetime.utcnow()
+            timestamp=datetime.utcnow(),
         )
-        embed.set_image(url=chart.url)
-        embed.set_footer(text=f"Upload by {interaction.user.display_name}")
+        embed.set_thumbnail(url=chart.url)
+        embed.set_footer(
+            text=f"Powered by Gemini · Upload by {interaction.user.display_name}"
+        )
+
         await interaction.followup.send(embed=embed)
 
     except Exception as e:
-        log.error(f"Analyze error: {e}")
-        await interaction.followup.send(f"❌ Gagal analisa chart: {str(e)[:200]}")
+        log.exception(e)
+        await interaction.followup.send(
+            f"❌ Gagal menganalisa chart: `{e}`")
+
 
 # ─── /addma ──────────────────────────────────────────────────────────────────
 MA_TYPE_CHOICES = [
