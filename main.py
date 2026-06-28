@@ -294,76 +294,51 @@ async def chart_cmd(
 
 
 # ─── /analyzechart ───────────────────────────────────────────────────────────
+# ─── /analyzechart ───────────────────────────────────────────────────────────
 @bot.tree.command(
     name="analyzechart",
-    description="Upload screenshot chart TradingView → dianalisa AI (support, resistance, sinyal)"
+    description="Upload screenshot chart TradingView → dianalisa AI Gemini"
 )
 @app_commands.describe(
-    chart="Upload screenshot chart TradingView kamu (PNG/JPG)",
-    catatan="Catatan tambahan opsional (contoh: fokus ke area breakout)",
+    chart="Upload gambar chart TradingView (PNG/JPG)",
+    catatan="Catatan tambahan (opsional)"
 )
 async def analyzechart_cmd(
     interaction: discord.Interaction,
     chart: discord.Attachment,
     catatan: str = "",
 ):
-    # Validasi tipe file
-    allowed_mime = {"image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"}
-    mime = chart.content_type or ""
-    if not any(mime.startswith(m) for m in allowed_mime):
-        await interaction.response.send_message(
-            "❌ File harus berupa gambar (PNG, JPG, WEBP).", ephemeral=True)
-        return
-
-    # Validasi ukuran (max 5 MB)
-    if chart.size > 5 * 1024 * 1024:
-        await interaction.response.send_message(
-            "❌ Ukuran gambar maksimal 5 MB.", ephemeral=True)
-        return
-
     await interaction.response.defer()
 
+    # Validasi file
+    if not chart.content_type or not chart.content_type.startswith("image/"):
+        await interaction.followup.send("❌ Harus upload gambar chart.", ephemeral=True)
+        return
+
     try:
-        # Download gambar dari Discord CDN
+        # Download gambar
         async with aiohttp.ClientSession() as session:
             async with session.get(chart.url) as resp:
                 image_bytes = await resp.read()
 
-        # Normalisasi mime type
-        if "jpeg" in mime or "jpg" in mime:
-            clean_mime = "image/jpeg"
-        elif "webp" in mime:
-            clean_mime = "image/webp"
-        elif "gif" in mime:
-            clean_mime = "image/gif"
-        else:
-            clean_mime = "image/png"
+        mime_type = chart.content_type or "image/png"
 
-        # Kirim ke Gemini Vision (gratis)
-        result = await analyze_chart_with_gemini(image_bytes, clean_mime, catatan)
-
-        # Discord embed limit 4096 chars
-        if len(result) > 3800:
-            result = result[:3800].rsplit("\n", 1)[0]
+        # Analisa dengan Gemini
+        result = await analyze_chart_with_gemini(image_bytes, mime_type, catatan)
 
         embed = discord.Embed(
-            title="🤖 Analisa Chart AI",
+            title="🤖 Analisa Chart AI (Gemini)",
             description=result,
             color=0x58a6ff,
-            timestamp=datetime.utcnow(),
+            timestamp=datetime.utcnow()
         )
-        embed.set_thumbnail(url=chart.url)
-        embed.set_footer(
-            text=f"Powered by Gemini · Upload by {interaction.user.display_name}"
-        )
-
+        embed.set_image(url=chart.url)
+        embed.set_footer(text=f"Upload by {interaction.user.display_name}")
         await interaction.followup.send(embed=embed)
 
     except Exception as e:
-        log.exception(e)
-        await interaction.followup.send(
-            f"❌ Gagal menganalisa chart: `{e}`")
-
+        log.error(f"Analyze error: {e}")
+        await interaction.followup.send(f"❌ Gagal analisa chart: {str(e)[:200]}")
 
 # ─── /addma ──────────────────────────────────────────────────────────────────
 MA_TYPE_CHOICES = [
