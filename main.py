@@ -207,7 +207,7 @@ async def analyze_chart_with_gemini(image_bytes: bytes, mime_type: str, extra_no
             }
         ],
         "generationConfig": {
-            "maxOutputTokens": 512,
+            "maxOutputTokens": 1024,
             "temperature": 0.1,
         },
     }
@@ -388,16 +388,9 @@ async def analyzechart_cmd(
         # Kirim ke Gemini Vision (gratis)
         result = await analyze_chart_with_gemini(image_bytes, clean_mime, catatan)
 
-        # Discord embed limit 4096 chars, potong kalau perlu
-        MAX = 3800
-        if len(result) > MAX:
-            result = result[:MAX].rsplit("\n", 1)[0] + "\n\n*[Dipotong — coba gambar lebih kecil]*"
-
-        # Kalau response kependekan / terpotong Gemini, kasih warning
-        sections = ["📌", "📈", "🔴", "🟢", "⚡", "🎯"]
-        missing = [s for s in sections if s not in result]
-        if missing:
-            result += f"\n\n⚠️ *Beberapa section tidak terbaca — coba upload ulang dengan gambar lebih jelas.*"
+        # Discord embed limit 4096 chars
+        if len(result) > 3800:
+            result = result[:3800].rsplit("\n", 1)[0]
 
         embed = discord.Embed(
             title="🤖 Analisa Chart AI",
