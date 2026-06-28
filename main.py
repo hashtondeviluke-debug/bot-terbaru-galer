@@ -171,64 +171,18 @@ def build_chart(ticker: str, timeframe: str, extra_mas: list[dict]) -> io.BytesI
 
 
 # ─── Gemini Vision: Analisa Chart ────────────────────────────────────────────
-ANALYZE_PROMPT = """Kamu analis teknikal IDX. Jawab dalam format ini PERSIS, setiap section 1 baris saja, tanpa penjelasan panjang:
+ANALYZE_PROMPT = """Kamu adalah analis teknikal profesional saham IDX. Analisa chart yang diupload dengan detail.
 
-📌 TICKER: [nama & timeframe]
-📈 TREND: [Uptrend/Downtrend/Sideways - alasan 5 kata]
-🔴 RESISTANCE: [level1, level2]
-🟢 SUPPORT: [level1, level2]
-⚡ SINYAL: [sinyal utama 1 kalimat]
-🎯 REKOMENDASI: [Buy/Sell/Wait | Entry: X | TP: X | SL: X]
-⚠️ Bukan saran investasi."""
+Berikan analisa dalam format berikut (bisa lebih dari 1 baris per section):
 
-async def analyze_chart_with_gemini(image_bytes: bytes, mime_type: str, extra_note: str = "") -> str:
-    """Kirim gambar ke Gemini API dan return hasil analisa. Gratis 1500 req/hari."""
-    if not GEMINI_KEY:
-        return (
-            "❌ `GEMINI_API_KEY` belum diset di environment variable Railway.\n"
-            "Daftar gratis di: https://aistudio.google.com/app/apikey"
-        )
-
-    b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
-    prompt = ANALYZE_PROMPT + (f"\n\nCatatan dari user: {extra_note}" if extra_note else "")
-
-    payload = {
-        "contents": [
-            {
-                "parts": [
-                    {
-                        "inline_data": {
-                            "mime_type": mime_type,
-                            "data": b64,
-                        }
-                    },
-                    {"text": prompt},
-                ]
-            }
-        ],
-        "generationConfig": {
-            "maxOutputTokens": 1024,
-            "temperature": 0.1,
-        },
-    }
-
-    url = (
-        f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"gemini-2.5-flash:generateContent?key={GEMINI_KEY}"
-    )
-
-    async with aiohttp.ClientSession() as session:
-        async with session.post(
-            url,
-            json=payload,
-            headers={"Content-Type": "application/json"},
-            timeout=aiohttp.ClientTimeout(total=60),
-        ) as resp:
-            if resp.status != 200:
-                err = await resp.text()
-                raise RuntimeError(f"Gemini API error {resp.status}: {err[:300]}")
-            data = await resp.json()
-            return data["candidates"][0]["content"]["parts"][0]["text"]
+📌 **TICKER**: Nama saham + timeframe
+📈 **TREND**: Trend keseluruhan (Uptrend / Downtrend / Sideways) + alasan singkat
+🔴 **RESISTANCE**: Level resistance utama (minimal 2 level) + kekuatannya
+🟢 **SUPPORT**: Level support utama (minimal 2 level) + kekuatannya
+📊 **INDIKATOR**: Analisa Moving Average, Volume, Candlestick pattern yang terlihat
+⚡ **SINYAL**: Sinyal trading saat ini (Bullish/Bearish/Neutral)
+🎯 **REKOMENDASI**: Rekomendasi action + entry price, target profit, stop loss
+⚠️ Catatan: Ini bukan saran investasi, hanya analisa teknikal."""
 
 
 # ─── Bot Setup ───────────────────────────────────────────────────────────────
@@ -250,47 +204,55 @@ async def on_ready():
 
 # ─── /price ──────────────────────────────────────────────────────────────────
 @bot.tree.command(name="price", description="Harga saham IDX saat ini")
-@app_commands.describe(ticker="Kode saham, contoh: BBCA")
-async def price(interaction: discord.Interaction, ticker: str):
+@app_commands.describe(ticker="Kode saham (contoh: BBCA, TLKM)")
+async def price_cmd(interaction: discord.Interaction, ticker: str):
     await interaction.response.defer()
     jk = to_jk(ticker)
-    
     try:
-        # Pakai download yang lebih stabil
-        df = yf.download(jk, period="5d", interval="1d", progress=False, auto_adjust=True)
-        
-        if df is None or df.empty:
+        hist = yf.download(jk, period="5d", interval="1d",
+                           progress=False, auto_adjust=True)
+
+        if hist is None or hist.empty:
             await interaction.followup.send(f"❌ Data tidak ditemukan untuk **{jk}**.")
             return
 
-        # Ambil nilai secara aman
-        close = df['Close']
-        current = float(close.iloc[-1])
-        prev = float(close.iloc[-2]) if len(close) > 1 else current
-        change = current - prev
-        pct = (change / prev * 100) if prev != 0 else 0
-        volume = int(df['Volume'].iloc[-1])
-        high = float(df['High'].iloc[-1])
-        low = float(df['Low'].iloc[-1])
+        close_s = get_col(hist, "Close")
+        high_s  = get_col(hist, "High")
+        low_s   = get_col(hist, "Low")
+        vol_s   = get_col(hist, "Volume")
 
-        sign = "🟢 ▲" if change >= 0 else "🔴 ▼"
+        last    = scalar(close_s.iloc[-1])
+        prev    = scalar(close_s.iloc[-2]) if len(close_s) >= 2 else last
+        chg     = last - prev
+        chg_pct = (chg / prev * 100) if prev else 0
+        vol     = int(scalar(vol_s.iloc[-1]))
+        hi      = scalar(high_s.iloc[-1])
+        lo      = scalar(low_s.iloc[-1])
+
+        sign  = "🟢" if chg >= 0 else "🔴"
+        arrow = "▲" if chg >= 0 else "▼"
+
         embed = discord.Embed(
-            title=f"📈 {jk.replace('.JK','')}",
-            color=discord.Color.green() if change >= 0 else discord.Color.red(),
-            timestamp=datetime.utcnow()
+            title=f"{sign} {jk}",
+            color=0x3fb950 if chg >= 0 else 0xf85149,
+            timestamp=datetime.utcnow(),
         )
-        embed.add_field(name="💰 Harga", value=f"**Rp {current:,.0f}**", inline=True)
-        embed.add_field(name="📊 Change", value=f"{sign} Rp {abs(change):,.0f} ({pct:+.2f}%)", inline=True)
-        embed.add_field(name="\u200b", value="\u200b", inline=False)
-        embed.add_field(name="🔼 High", value=f"Rp {high:,.0f}", inline=True)
-        embed.add_field(name="🔽 Low", value=f"Rp {low:,.0f}", inline=True)
-        embed.add_field(name="📦 Volume", value=f"{volume:,}", inline=True)
-        embed.set_footer(text="Data via Yahoo Finance • IDX Bot")
+        embed.add_field(name="💰 Harga",      value=f"Rp {last:,.0f}", inline=True)
+        embed.add_field(name=f"{arrow} Perubahan",
+                        value=f"Rp {chg:+,.0f}  ({chg_pct:+.2f}%)", inline=True)
+        embed.add_field(name="\u200b",        value="\u200b", inline=False)
+        embed.add_field(name="📈 High",       value=f"Rp {hi:,.0f}", inline=True)
+        embed.add_field(name="📉 Low",        value=f"Rp {lo:,.0f}", inline=True)
+        embed.add_field(name="📊 Volume",     value=f"{vol:,}", inline=True)
+        embed.set_footer(text="Data via yfinance · IDX")
+
         await interaction.followup.send(embed=embed)
 
     except Exception as e:
-        log.error(f"Price error {jk}: {e}")
-        await interaction.followup.send(f"❌ Error saat mengambil data **{jk}**.")
+        log.exception(e)
+        await interaction.followup.send(
+            f"❌ Error saat mengambil data **{jk}**: `{e}`")
+
 
 # ─── /chart ──────────────────────────────────────────────────────────────────
 TF_CHOICES = [
