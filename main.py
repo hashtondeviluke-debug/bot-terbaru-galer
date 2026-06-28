@@ -339,6 +339,11 @@ async def chart_cmd(
             f"❌ Gagal membuat chart **{jk}**: `{e}`")
 
 
+# ─── Cooldown tracker untuk /analyzechart ────────────────────────────────────
+# analyze_cooldowns[user_id] = timestamp terakhir pakai
+analyze_cooldowns: dict[int, float] = {}
+ANALYZE_COOLDOWN_SECONDS = 30
+
 # ─── /analyzechart ───────────────────────────────────────────────────────────
 @bot.tree.command(
     name="analyzechart",
@@ -353,6 +358,19 @@ async def analyzechart_cmd(
     chart: discord.Attachment,
     catatan: str = "",
 ):
+    import time
+
+    # Cek cooldown per user
+    user_id = interaction.user.id
+    now = time.time()
+    last_used = analyze_cooldowns.get(user_id, 0)
+    sisa = ANALYZE_COOLDOWN_SECONDS - (now - last_used)
+    if sisa > 0:
+        await interaction.response.send_message(
+            f"⏳ Sabar dulu! Kamu bisa pakai `/analyzechart` lagi dalam **{int(sisa)+1} detik**.",
+            ephemeral=True)
+        return
+
     # Validasi tipe file
     allowed_mime = {"image/png", "image/jpeg", "image/jpg", "image/webp", "image/gif"}
     mime = chart.content_type or ""
@@ -366,6 +384,9 @@ async def analyzechart_cmd(
         await interaction.response.send_message(
             "❌ Ukuran gambar maksimal 5 MB.", ephemeral=True)
         return
+
+    # Catat waktu pakai
+    analyze_cooldowns[user_id] = now
 
     await interaction.response.defer(thinking=True)
 
