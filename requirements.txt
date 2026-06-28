@@ -1,0 +1,6 @@
+discord.py==2.3.2
+yfinance>=0.2.36
+matplotlib>=3.8.0
+numpy>=1.26.0
+aiohttp>=3.9.0
+pandas>=2.1.0
