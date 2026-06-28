@@ -207,7 +207,7 @@ async def analyze_chart_with_gemini(image_bytes: bytes, mime_type: str, extra_no
             }
         ],
         "generationConfig": {
-            "maxOutputTokens": 1024,
+            "maxOutputTokens": 2048,
             "temperature": 0.1,
         },
     }
@@ -367,10 +367,9 @@ async def analyzechart_cmd(
             "❌ Ukuran gambar maksimal 5 MB.", ephemeral=True)
         return
 
-    await interaction.response.defer()
+    await interaction.response.defer(thinking=True)
 
     try:
-        # Download gambar dari Discord CDN
         async with aiohttp.ClientSession() as session:
             async with session.get(chart.url) as resp:
                 image_bytes = await resp.read()
