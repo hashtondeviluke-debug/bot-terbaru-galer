@@ -172,29 +172,27 @@ def build_chart(ticker: str, timeframe: str, extra_mas: list[dict]) -> io.BytesI
 
 # ─── Gemini Vision: Analisa Chart ────────────────────────────────────────────
 ANALYZE_PROMPT = """Kamu adalah analis teknikal profesional saham Indonesia (IDX).
-Analisa chart trading yang diberikan dan berikan output PERSIS dalam format ini (gunakan emoji, jangan tambah section lain):
+Analisa chart dan jawab RINGKAS, maksimal 2 kalimat per section. Format PERSIS ini:
 
 📌 **TICKER & TIMEFRAME**
-Sebutkan nama saham dan timeframe jika terlihat di chart. Jika tidak terlihat, tulis "Tidak terdeteksi".
+[nama saham & timeframe, atau "Tidak terdeteksi"]
 
 📈 **TREND**
-Identifikasi trend utama (Uptrend / Downtrend / Sideways) beserta alasannya berdasarkan struktur candle dan MA yang terlihat.
+[Uptrend/Downtrend/Sideways + 1 alasan singkat]
 
 🔴 **RESISTANCE**
-Sebutkan 2-3 level resistance kuat (dalam Rupiah jika terlihat, atau deskripsi posisi).
+[2 level saja, pisah koma]
 
 🟢 **SUPPORT**
-Sebutkan 2-3 level support kuat (dalam Rupiah jika terlihat, atau deskripsi posisi).
+[2 level saja, pisah koma]
 
 ⚡ **SINYAL**
-Sebutkan sinyal trading yang terlihat: pola candlestick, breakout/breakdown, divergence, golden/death cross MA, dll.
+[1-2 sinyal utama saja]
 
 🎯 **REKOMENDASI**
-Berikan rekomendasi singkat: Buy / Sell / Wait, beserta area entry, target profit, dan stop loss jika bisa diidentifikasi.
+[Buy/Sell/Wait · Entry: X · TP: X · SL: X]
 
-⚠️ **DISCLAIMER**
-Analisis ini hanya untuk edukasi, bukan saran investasi. Selalu lakukan riset mandiri.
-"""
+⚠️ *Bukan saran investasi. Riset mandiri.*"""
 
 async def analyze_chart_with_gemini(image_bytes: bytes, mime_type: str, extra_note: str = "") -> str:
     """Kirim gambar ke Gemini API dan return hasil analisa. Gratis 1500 req/hari."""
@@ -403,7 +401,13 @@ async def analyzechart_cmd(
         # Kirim ke Gemini Vision (gratis)
         result = await analyze_chart_with_gemini(image_bytes, clean_mime, catatan)
 
-        # Kirim hasil dalam embed
+        # Discord embed description limit = 4096 chars
+        # Kalau Gemini masih kepanjangan, potong di batas section terakhir yang utuh
+        MAX = 4000
+        if len(result) > MAX:
+            cut = result[:MAX].rfind("\n🎯")  # potong sebelum section REKOMENDASI kalau kepanjangan
+            result = result[: cut if cut > 0 else MAX] + "\n\n*[Response dipotong — coba chart lebih simple]*"
+
         embed = discord.Embed(
             title="🤖 Analisa Chart AI",
             description=result,
