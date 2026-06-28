@@ -250,55 +250,47 @@ async def on_ready():
 
 # ─── /price ──────────────────────────────────────────────────────────────────
 @bot.tree.command(name="price", description="Harga saham IDX saat ini")
-@app_commands.describe(ticker="Kode saham (contoh: BBCA, TLKM)")
-async def price_cmd(interaction: discord.Interaction, ticker: str):
+@app_commands.describe(ticker="Kode saham, contoh: BBCA")
+async def price(interaction: discord.Interaction, ticker: str):
     await interaction.response.defer()
     jk = to_jk(ticker)
+    
     try:
-        hist = yf.download(jk, period="5d", interval="1d",
-                           progress=False, auto_adjust=True)
-
-        if hist is None or hist.empty:
+        # Pakai download yang lebih stabil
+        df = yf.download(jk, period="5d", interval="1d", progress=False, auto_adjust=True)
+        
+        if df is None or df.empty:
             await interaction.followup.send(f"❌ Data tidak ditemukan untuk **{jk}**.")
             return
 
-        close_s = get_col(hist, "Close")
-        high_s  = get_col(hist, "High")
-        low_s   = get_col(hist, "Low")
-        vol_s   = get_col(hist, "Volume")
+        # Ambil nilai secara aman
+        close = df['Close']
+        current = float(close.iloc[-1])
+        prev = float(close.iloc[-2]) if len(close) > 1 else current
+        change = current - prev
+        pct = (change / prev * 100) if prev != 0 else 0
+        volume = int(df['Volume'].iloc[-1])
+        high = float(df['High'].iloc[-1])
+        low = float(df['Low'].iloc[-1])
 
-        last    = scalar(close_s.iloc[-1])
-        prev    = scalar(close_s.iloc[-2]) if len(close_s) >= 2 else last
-        chg     = last - prev
-        chg_pct = (chg / prev * 100) if prev else 0
-        vol     = int(scalar(vol_s.iloc[-1]))
-        hi      = scalar(high_s.iloc[-1])
-        lo      = scalar(low_s.iloc[-1])
-
-        sign  = "🟢" if chg >= 0 else "🔴"
-        arrow = "▲" if chg >= 0 else "▼"
-
+        sign = "🟢 ▲" if change >= 0 else "🔴 ▼"
         embed = discord.Embed(
-            title=f"{sign} {jk}",
-            color=0x3fb950 if chg >= 0 else 0xf85149,
-            timestamp=datetime.utcnow(),
+            title=f"📈 {jk.replace('.JK','')}",
+            color=discord.Color.green() if change >= 0 else discord.Color.red(),
+            timestamp=datetime.utcnow()
         )
-        embed.add_field(name="💰 Harga",      value=f"Rp {last:,.0f}", inline=True)
-        embed.add_field(name=f"{arrow} Perubahan",
-                        value=f"Rp {chg:+,.0f}  ({chg_pct:+.2f}%)", inline=True)
-        embed.add_field(name="\u200b",        value="\u200b", inline=False)
-        embed.add_field(name="📈 High",       value=f"Rp {hi:,.0f}", inline=True)
-        embed.add_field(name="📉 Low",        value=f"Rp {lo:,.0f}", inline=True)
-        embed.add_field(name="📊 Volume",     value=f"{vol:,}", inline=True)
-        embed.set_footer(text="Data via yfinance · IDX")
-
+        embed.add_field(name="💰 Harga", value=f"**Rp {current:,.0f}**", inline=True)
+        embed.add_field(name="📊 Change", value=f"{sign} Rp {abs(change):,.0f} ({pct:+.2f}%)", inline=True)
+        embed.add_field(name="\u200b", value="\u200b", inline=False)
+        embed.add_field(name="🔼 High", value=f"Rp {high:,.0f}", inline=True)
+        embed.add_field(name="🔽 Low", value=f"Rp {low:,.0f}", inline=True)
+        embed.add_field(name="📦 Volume", value=f"{volume:,}", inline=True)
+        embed.set_footer(text="Data via Yahoo Finance • IDX Bot")
         await interaction.followup.send(embed=embed)
 
     except Exception as e:
-        log.exception(e)
-        await interaction.followup.send(
-            f"❌ Error saat mengambil data **{jk}**: `{e}`")
-
+        log.error(f"Price error {jk}: {e}")
+        await interaction.followup.send(f"❌ Error saat mengambil data **{jk}**.")
 
 # ─── /chart ──────────────────────────────────────────────────────────────────
 TF_CHOICES = [
