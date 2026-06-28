@@ -228,8 +228,8 @@ async def analyze_chart_with_gemini(image_bytes: bytes, mime_type: str, extra_no
     }
 
     url = (
-        f"https://generativelanguage.googleapis.com/v1/models/"
-        f"gemini-2.0-flash:generateContent?key={GEMINI_KEY}"
+        f"https://generativelanguage.googleapis.com/v1beta/models/"
+        f"gemini-2.5-flash:generateContent?key={GEMINI_KEY}"
     )
 
     async with aiohttp.ClientSession() as session:
