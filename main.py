@@ -171,28 +171,15 @@ def build_chart(ticker: str, timeframe: str, extra_mas: list[dict]) -> io.BytesI
 
 
 # ─── Gemini Vision: Analisa Chart ────────────────────────────────────────────
-ANALYZE_PROMPT = """Kamu adalah analis teknikal profesional saham Indonesia (IDX).
-Analisa chart dan jawab RINGKAS, maksimal 2 kalimat per section. Format PERSIS ini:
+ANALYZE_PROMPT = """Kamu analis teknikal IDX. Jawab dalam format ini PERSIS, setiap section 1 baris saja, tanpa penjelasan panjang:
 
-📌 **TICKER & TIMEFRAME**
-[nama saham & timeframe, atau "Tidak terdeteksi"]
-
-📈 **TREND**
-[Uptrend/Downtrend/Sideways + 1 alasan singkat]
-
-🔴 **RESISTANCE**
-[2 level saja, pisah koma]
-
-🟢 **SUPPORT**
-[2 level saja, pisah koma]
-
-⚡ **SINYAL**
-[1-2 sinyal utama saja]
-
-🎯 **REKOMENDASI**
-[Buy/Sell/Wait · Entry: X · TP: X · SL: X]
-
-⚠️ *Bukan saran investasi. Riset mandiri.*"""
+📌 TICKER: [nama & timeframe]
+📈 TREND: [Uptrend/Downtrend/Sideways - alasan 5 kata]
+🔴 RESISTANCE: [level1, level2]
+🟢 SUPPORT: [level1, level2]
+⚡ SINYAL: [sinyal utama 1 kalimat]
+🎯 REKOMENDASI: [Buy/Sell/Wait | Entry: X | TP: X | SL: X]
+⚠️ Bukan saran investasi."""
 
 async def analyze_chart_with_gemini(image_bytes: bytes, mime_type: str, extra_note: str = "") -> str:
     """Kirim gambar ke Gemini API dan return hasil analisa. Gratis 1500 req/hari."""
@@ -220,8 +207,8 @@ async def analyze_chart_with_gemini(image_bytes: bytes, mime_type: str, extra_no
             }
         ],
         "generationConfig": {
-            "maxOutputTokens": 1024,
-            "temperature": 0.3,
+            "maxOutputTokens": 512,
+            "temperature": 0.1,
         },
     }
 
@@ -401,12 +388,16 @@ async def analyzechart_cmd(
         # Kirim ke Gemini Vision (gratis)
         result = await analyze_chart_with_gemini(image_bytes, clean_mime, catatan)
 
-        # Discord embed description limit = 4096 chars
-        # Kalau Gemini masih kepanjangan, potong di batas section terakhir yang utuh
-        MAX = 4000
+        # Discord embed limit 4096 chars, potong kalau perlu
+        MAX = 3800
         if len(result) > MAX:
-            cut = result[:MAX].rfind("\n🎯")  # potong sebelum section REKOMENDASI kalau kepanjangan
-            result = result[: cut if cut > 0 else MAX] + "\n\n*[Response dipotong — coba chart lebih simple]*"
+            result = result[:MAX].rsplit("\n", 1)[0] + "\n\n*[Dipotong — coba gambar lebih kecil]*"
+
+        # Kalau response kependekan / terpotong Gemini, kasih warning
+        sections = ["📌", "📈", "🔴", "🟢", "⚡", "🎯"]
+        missing = [s for s in sections if s not in result]
+        if missing:
+            result += f"\n\n⚠️ *Beberapa section tidak terbaca — coba upload ulang dengan gambar lebih jelas.*"
 
         embed = discord.Embed(
             title="🤖 Analisa Chart AI",
