@@ -638,7 +638,7 @@ async def fetch_telegram_today() -> dict:
         raise RuntimeError("Telethon client belum siap. Cek TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_SESSION.")
 
     channel  = TELEGRAM_CHANNEL.lstrip("@")
-    now_utc  = datetime.utcnow()
+    now_utc  = datetime.utcnow().replace(tzinfo=__import__('datetime').timezone.utc)
     today    = now_utc.date()
 
     # Fetch pesan dari channel hari ini
@@ -764,7 +764,7 @@ async def today_cmd(interaction: discord.Interaction):
         for i, msg in enumerate(messages):
             import re
             text     = msg["text"]
-            time_str = (msg["date"] + timedelta(hours=7)).strftime("%H:%M")  # WIB
+            time_str = (msg["date"].astimezone(__import__('datetime').timezone(__import__('datetime').timedelta(hours=7)))).strftime("%H:%M")
 
             embed = discord.Embed(
                 title=f"📰 Market Update {today_str} — {time_str} WIB" if i == 0
