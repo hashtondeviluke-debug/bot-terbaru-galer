@@ -182,12 +182,20 @@ ANALYZE_PROMPT = """Kamu analis teknikal IDX. Jawab dalam format ini PERSIS, set
 ⚠️ Bukan saran investasi."""
 
 async def analyze_chart_with_gemini(image_bytes: bytes, mime_type: str, extra_note: str = "") -> str:
-    """Kirim gambar ke Gemini API dan return hasil analisa. Gratis 1500 req/hari."""
+    """Kirim gambar ke Gemini API dengan fallback ke model lain kalau 429."""
     if not GEMINI_KEY:
         return (
             "❌ `GEMINI_API_KEY` belum diset di environment variable Railway.\n"
             "Daftar gratis di: https://aistudio.google.com/app/apikey"
         )
+
+    # Urutan fallback: model terbaik dulu, kalau limit lanjut ke berikutnya
+    MODELS = [
+        "gemini-2.5-flash",
+        "gemini-2.5-flash-lite",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash",
+    ]
 
     b64 = base64.standard_b64encode(image_bytes).decode("utf-8")
     prompt = ANALYZE_PROMPT + (f"\n\nCatatan dari user: {extra_note}" if extra_note else "")
@@ -196,12 +204,7 @@ async def analyze_chart_with_gemini(image_bytes: bytes, mime_type: str, extra_no
         "contents": [
             {
                 "parts": [
-                    {
-                        "inline_data": {
-                            "mime_type": mime_type,
-                            "data": b64,
-                        }
-                    },
+                    {"inline_data": {"mime_type": mime_type, "data": b64}},
                     {"text": prompt},
                 ]
             }
@@ -212,23 +215,39 @@ async def analyze_chart_with_gemini(image_bytes: bytes, mime_type: str, extra_no
         },
     }
 
-    url = (
-        f"https://generativelanguage.googleapis.com/v1beta/models/"
-        f"gemini-2.5-flash:generateContent?key={GEMINI_KEY}"
-    )
-
+    last_error = ""
     async with aiohttp.ClientSession() as session:
-        async with session.post(
-            url,
-            json=payload,
-            headers={"Content-Type": "application/json"},
-            timeout=aiohttp.ClientTimeout(total=60),
-        ) as resp:
-            if resp.status != 200:
-                err = await resp.text()
-                raise RuntimeError(f"Gemini API error {resp.status}: {err[:300]}")
-            data = await resp.json()
-            return data["candidates"][0]["content"]["parts"][0]["text"]
+        for model in MODELS:
+            url = (
+                f"https://generativelanguage.googleapis.com/v1beta/models/"
+                f"{model}:generateContent?key={GEMINI_KEY}"
+            )
+            try:
+                async with session.post(
+                    url,
+                    json=payload,
+                    headers={"Content-Type": "application/json"},
+                    timeout=aiohttp.ClientTimeout(total=60),
+                ) as resp:
+                    if resp.status == 429:
+                        log.warning(f"Model {model} kena rate limit, coba model berikutnya...")
+                        last_error = f"429 rate limit"
+                        continue  # coba model berikutnya
+                    if resp.status != 200:
+                        err = await resp.text()
+                        log.warning(f"Model {model} error {resp.status}, coba berikutnya...")
+                        last_error = f"{resp.status}"
+                        continue
+                    data = await resp.json()
+                    result = data["candidates"][0]["content"]["parts"][0]["text"]
+                    log.info(f"Analisa berhasil pakai model: {model}")
+                    return result
+            except Exception as e:
+                log.warning(f"Model {model} exception: {e}, coba berikutnya...")
+                last_error = str(e)
+                continue
+
+    raise RuntimeError(f"Semua model Gemini kena limit atau error. Last error: {last_error}")
 
 
 # ─── Bot Setup ───────────────────────────────────────────────────────────────
