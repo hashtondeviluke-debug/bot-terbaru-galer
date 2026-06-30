@@ -8,8 +8,9 @@ import io
 import asyncio
 import logging
 import base64
+import re
 from collections import defaultdict
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import aiohttp
 import discord
@@ -23,6 +24,9 @@ import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 import numpy as np
 
+from telethon import TelegramClient
+from telethon.sessions import StringSession
+
 # ─── Logging ────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
@@ -32,8 +36,15 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 # ─── Config ─────────────────────────────────────────────────────────────────
-TOKEN          = os.environ.get("DISCORD_TOKEN", "")
-GEMINI_KEY = os.environ.get("GEMINI_API_KEY", "")
+TOKEN              = os.environ.get("DISCORD_TOKEN", "")
+GEMINI_KEY         = os.environ.get("GEMINI_API_KEY", "")
+TELEGRAM_API_ID    = int(os.environ.get("TELEGRAM_API_ID", "0"))
+TELEGRAM_API_HASH  = os.environ.get("TELEGRAM_API_HASH", "")
+TELEGRAM_SESSION   = os.environ.get("TELEGRAM_SESSION", "")   # StringSession
+TELEGRAM_CHANNEL   = os.environ.get("TELEGRAM_CHANNEL", "tuntunsekuritas")
+
+# Telethon client (shared, start saat bot ready)
+tg_client: TelegramClient | None = None
 
 # ─── In-memory State ─────────────────────────────────────────────────────────
 custom_mas: dict[int, dict[str, list[dict]]] = defaultdict(lambda: defaultdict(list))
@@ -257,7 +268,25 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 
 @bot.event
 async def on_ready():
+    global tg_client
     log.info(f"Logged in as {bot.user} (ID: {bot.user.id})")
+
+    # Start Telethon client
+    if TELEGRAM_API_ID and TELEGRAM_API_HASH and TELEGRAM_SESSION:
+        try:
+            tg_client = TelegramClient(
+                StringSession(TELEGRAM_SESSION),
+                TELEGRAM_API_ID,
+                TELEGRAM_API_HASH,
+            )
+            await tg_client.start()
+            log.info("✅ Telethon client connected")
+        except Exception as e:
+            log.error(f"❌ Telethon gagal connect: {e}")
+            tg_client = None
+    else:
+        log.warning("⚠️ TELEGRAM_API_ID/HASH/SESSION tidak diset, /today tidak akan berfungsi")
+
     try:
         synced = await bot.tree.sync()
         log.info(f"Synced {len(synced)} slash commands")
@@ -593,6 +622,205 @@ async def check_alerts():
 @check_alerts.before_loop
 async def before_check():
     await bot.wait_until_ready()
+
+
+# ─── /today ──────────────────────────────────────────────────────────────────
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHANNEL   = os.environ.get("TELEGRAM_CHANNEL", "")  # contoh: growinmandiri
+
+async def fetch_telegram_today() -> dict:
+    """
+    Fetch semua pesan hari ini dari public Telegram channel pakai Telethon.
+    Tidak perlu join/admin channel.
+    """
+    global tg_client
+    if not tg_client or not tg_client.is_connected():
+        raise RuntimeError("Telethon client belum siap. Cek TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_SESSION.")
+
+    channel  = TELEGRAM_CHANNEL.lstrip("@")
+    now_utc  = datetime.utcnow()
+    today    = now_utc.date()
+
+    # Fetch pesan dari channel hari ini
+    messages_raw = []
+    async for msg in tg_client.iter_messages(
+        f"@{channel}",
+        limit=50,
+        offset_date=now_utc,
+        reverse=False,
+    ):
+        if msg.date.date() < today:
+            break
+        if msg.date.date() == today and msg.date <= now_utc:
+            messages_raw.append(msg)
+
+    messages_raw.reverse()  # urutkan dari pagi ke siang
+
+    if not messages_raw:
+        raise RuntimeError(
+            f"Belum ada pesan hari ini dari @{channel}.\n"
+            f"Channel mungkin belum posting hari ini."
+        )
+
+    messages = []
+    pdfs     = []
+
+    for msg in messages_raw:
+        text = msg.text or msg.message or ""
+        if text:
+            messages.append({"text": text, "date": msg.date})
+
+        # Download dokumen PDF
+        if msg.document:
+            mime = getattr(msg.document, "mime_type", "") or ""
+            if "pdf" in mime and len(pdfs) < 3:
+                try:
+                    fname = "dokumen.pdf"
+                    for attr in (msg.document.attributes or []):
+                        if hasattr(attr, "file_name") and attr.file_name:
+                            fname = attr.file_name
+                            break
+                    buf = io.BytesIO()
+                    await tg_client.download_media(msg, file=buf)
+                    buf.seek(0)
+                    pdfs.append({"name": fname, "bytes": buf.read()})
+                except Exception as e:
+                    log.warning(f"Gagal download PDF: {e}")
+
+    return {"messages": messages, "pdfs": pdfs}
+
+
+def format_news_embed(text: str) -> discord.Embed:
+    """Format teks news Telegram jadi Discord embed yang rapi."""
+    today_str = datetime.now().strftime("%A, %d %B %Y")
+
+    embed = discord.Embed(
+        title=f"📰 Market Update — {today_str}",
+        color=0x1DA1F2,
+        timestamp=datetime.utcnow(),
+    )
+
+    # Parse berita bernomor: "1. Judul https://..."
+    import re
+    lines = text.split("\n")
+    news_items = []
+    current = ""
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        # Deteksi baris bernomor
+        if re.match(r"^\d+\.", line):
+            if current:
+                news_items.append(current)
+            current = line
+        else:
+            current += " " + line if current else line
+
+    if current:
+        news_items.append(current)
+
+    if news_items:
+        # Tampilkan berita sebagai list ringkas
+        news_text = ""
+        for item in news_items:
+            # Pisah nomor, judul, dan link
+            match = re.match(r"^(\d+)\.\s*(.+?)\s*(https?://\S+)?$", item)
+            if match:
+                num   = match.group(1)
+                judul = match.group(2).strip()
+                link  = match.group(3) or ""
+                if link:
+                    news_text += f"**{num}.** [{judul}]({link})\n"
+                else:
+                    news_text += f"**{num}.** {judul}\n"
+            else:
+                news_text += f"• {item}\n"
+
+            if len(news_text) > 3500:
+                news_text += "...\n"
+                break
+
+        embed.description = news_text
+    else:
+        embed.description = text[:3500]
+
+    embed.set_footer(text="Sumber: Telegram Channel · Bukan saran investasi")
+    return embed
+
+
+@bot.tree.command(name="today", description="Fetch semua market update hari ini dari Telegram")
+async def today_cmd(interaction: discord.Interaction):
+    await interaction.response.defer(thinking=True)
+    try:
+        data     = await fetch_telegram_today()
+        messages = data["messages"]
+        pdfs     = data["pdfs"]
+
+        today_str = datetime.now().strftime("%d %B %Y")
+
+        # Kirim setiap pesan sebagai embed terpisah (supaya tidak kepotong)
+        for i, msg in enumerate(messages):
+            import re
+            text     = msg["text"]
+            time_str = (msg["date"] + timedelta(hours=7)).strftime("%H:%M")  # WIB
+
+            embed = discord.Embed(
+                title=f"📰 Market Update {today_str} — {time_str} WIB" if i == 0
+                      else f"📋 Update {time_str} WIB",
+                color=0x1DA1F2,
+                timestamp=datetime.utcnow(),
+            )
+
+            # Parse berita bernomor
+            lines      = text.split("\n")
+            news_items = []
+            current    = ""
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                if re.match(r"^\d+\.", line):
+                    if current:
+                        news_items.append(current)
+                    current = line
+                else:
+                    current += " " + line if current else line
+            if current:
+                news_items.append(current)
+
+            if news_items:
+                desc = ""
+                for item in news_items:
+                    match = re.match(r"^(\d+)\.\s*(.+?)\s*(https?://\S+)?$", item)
+                    if match:
+                        num, judul, link = match.group(1), match.group(2).strip(), match.group(3) or ""
+                        desc += f"**{num}.** [{judul}]({link})\n" if link else f"**{num}.** {judul}\n"
+                    else:
+                        desc += f"{item}\n"
+                    if len(desc) > 3800:
+                        desc += "*(dipotong)*"
+                        break
+                embed.description = desc
+            else:
+                embed.description = text[:3800]
+
+            embed.set_footer(text=f"@{TELEGRAM_CHANNEL} · Bukan saran investasi")
+
+            # Lampirkan PDF hanya di pesan pertama
+            if i == 0 and pdfs:
+                files = [discord.File(io.BytesIO(p["bytes"]), filename=p["name"]) for p in pdfs]
+                await interaction.followup.send(embed=embed, files=files)
+            else:
+                await interaction.followup.send(embed=embed)
+
+        if not messages:
+            await interaction.followup.send("ℹ️ Belum ada update hari ini.")
+
+    except Exception as e:
+        log.exception(e)
+        await interaction.followup.send(f"❌ Gagal fetch update hari ini: `{e}`")
 
 
 # ─── Run ──────────────────────────────────────────────────────────────────────
