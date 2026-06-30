@@ -13,9 +13,16 @@ BASE_URL = "https://v3.football.api-sports.io"
 WIB = timezone(timedelta(hours=7))
 
 LEAGUE_IDS = {
-    "world_cup": 1,    # FIFA World Cup
+    "world_cup": 1,    # FIFA World Cup 2026
     "epl":       39,   # Premier League
     "la_liga":   140,  # La Liga
+}
+
+# Season aktif per liga
+LEAGUE_SEASONS = {
+    "world_cup": 2026,
+    "epl":       2025,
+    "la_liga":   2025,
 }
 
 async def fetch_sports_data(league_key: str) -> list[dict]:
@@ -38,7 +45,7 @@ async def fetch_sports_data(league_key: str) -> list[dict]:
     params = {
         "league": league_id,
         "date":   today,
-        "season": datetime.now(WIB).year,
+        "season": LEAGUE_SEASONS[league_key],
     }
 
     async with aiohttp.ClientSession() as session:
