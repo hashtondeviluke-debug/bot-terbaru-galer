@@ -27,6 +27,8 @@ import numpy as np
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 
+import gambling  # noqa: E402 — diimport setelah bot dibuat
+
 # ─── Logging ────────────────────────────────────────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
@@ -294,6 +296,44 @@ async def on_ready():
         log.error(f"Sync error: {e}")
     if not check_alerts.is_running():
         check_alerts.start()
+    if not resolve_bets_task.is_running():
+        resolve_bets_task.start()
+
+    # Setup gambling & betting commands
+    gambling.setup_economy(bot)
+    gambling.setup_betting(bot)
+    # Re-sync supaya command baru terdaftar
+    try:
+        synced2 = await bot.tree.sync()
+        log.info(f"Re-synced {len(synced2)} slash commands (after gambling setup)")
+    except Exception as e:
+        log.error(f"Re-sync error: {e}")
+
+
+@tasks.loop(minutes=10)
+async def resolve_bets_task():
+    """Auto-resolve taruhan yang sudah selesai tiap 10 menit."""
+    try:
+        from fetch_sports import resolve_bets
+        from gambling import load_data, save_data
+        data   = load_data()
+        notifs = await resolve_bets(bot, data)
+        if notifs:
+            save_data(data)
+            for n in notifs:
+                uid = int(n["user_id"])
+                try:
+                    user = await bot.fetch_user(uid)
+                    await user.send(n["text"])
+                except Exception:
+                    pass
+    except Exception as e:
+        log.warning(f"resolve_bets_task error: {e}")
+
+
+@resolve_bets_task.before_loop
+async def before_resolve():
+    await bot.wait_until_ready()
 
 
 # ─── /price ──────────────────────────────────────────────────────────────────
