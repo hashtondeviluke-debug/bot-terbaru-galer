@@ -27,7 +27,8 @@ import numpy as np
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 
-import gambling  # noqa: E402 — diimport setelah bot dibuat
+import gambling
+import trading
 
 # ─── Logging ────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -302,6 +303,7 @@ async def on_ready():
     # Setup gambling & betting commands
     gambling.setup_economy(bot)
     gambling.setup_betting(bot)
+    trading.setup_trading(bot)
     # Re-sync supaya command baru terdaftar
     try:
         synced2 = await bot.tree.sync()
